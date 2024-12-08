@@ -238,6 +238,36 @@ int main(int argc, char* argv[]) {
         // Save block matching visualization
         save_visualization("block_matching_result.ppm", ref_img, alignment, 5);
         
+        // Create and save block matching warped image
+        Image* bm_warped = create_warped_image(target_img, alignment);
+        if (bm_warped) {
+            // Save as PPM
+            FILE* fp = fopen("block_matching_warped.ppm", "wb");
+            if (fp) {
+                fprintf(fp, "P6\n%d %d\n255\n", bm_warped->width, bm_warped->height);
+                // Convert float [0,1] to uint8 [0,255]
+                uint8_t* rgb = (uint8_t*)malloc(bm_warped->height * bm_warped->width * 3);
+                if (rgb) {
+                    for (int i = 0; i < bm_warped->height * bm_warped->width; i++) {
+                        uint8_t val = (uint8_t)(bm_warped->data[i] * 255.0f);
+                        rgb[i*3 + 0] = val;  // R
+                        rgb[i*3 + 1] = val;  // G
+                        rgb[i*3 + 2] = val;  // B
+                    }
+                    fwrite(rgb, 1, bm_warped->height * bm_warped->width * 3, fp);
+                    free(rgb);
+                }
+                fclose(fp);
+            }
+            free_image(bm_warped);
+        }
+        
+        // Add error map visualization for block matching
+        ErrorMap* bm_error = create_error_map(ref_img, target_img, alignment);
+        if (bm_error) {
+            save_error_map_visualization(bm_error, "block_matching_error.ppm");
+        }
+        
         // Run ICA refinement
         ICAParams ica_params = {
             .sigma_blur = 0.5f,
@@ -253,9 +283,54 @@ int main(int argc, char* argv[]) {
         if (refined_alignment) {
             // Save ICA refinement visualization
             save_visualization("ica_refined_result.ppm", ref_img, refined_alignment, 5);
+            
+            // Create and save ICA warped image
+            Image* ica_warped = create_warped_image(target_img, refined_alignment);
+            if (ica_warped) {
+                FILE* fp = fopen("ica_refined_warped.ppm", "wb");
+                if (fp) {
+                    fprintf(fp, "P6\n%d %d\n255\n", ica_warped->width, ica_warped->height);
+                    uint8_t* rgb = (uint8_t*)malloc(ica_warped->height * ica_warped->width * 3);
+                    if (rgb) {
+                        for (int i = 0; i < ica_warped->height * ica_warped->width; i++) {
+                            uint8_t val = (uint8_t)(ica_warped->data[i] * 255.0f);
+                            rgb[i*3 + 0] = val;
+                            rgb[i*3 + 1] = val;
+                            rgb[i*3 + 2] = val;
+                        }
+                        fwrite(rgb, 1, ica_warped->height * ica_warped->width * 3, fp);
+                        free(rgb);
+                    }
+                    fclose(fp);
+                }
+                free_image(ica_warped);
+            }
+            
+            // Add error map visualization for ICA
+            ErrorMap* ica_error = create_error_map(ref_img, target_img, refined_alignment);
+            if (ica_error) {
+                save_error_map_visualization(ica_error, "ica_refined_error.ppm");
+                
+                // Compare block matching and ICA errors
+                analyze_error_maps(bm_error, ica_error);
+                
+                // Add region analysis (4x4 grid)
+                printf("\nBlock Matching Region Analysis:\n");
+                analyze_regions(bm_error, 4, 4);
+                
+                printf("\nICA Region Analysis:\n");
+                analyze_regions(ica_error, 4, 4);
+                
+                free_error_map(ica_error);
+            }
+            
             free_alignment_map(refined_alignment);
             free_hessian_matrix(hessian);
             free_image_gradients(grads);
+        }
+        
+        if (bm_error) {
+            free_error_map(bm_error);
         }
         
         free_alignment_map(alignment);
