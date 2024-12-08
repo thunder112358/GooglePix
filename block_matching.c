@@ -8,6 +8,15 @@
 // Helper function declarations
 static void compute_gaussian_kernel(float* kernel, int size, float sigma);
 static void apply_gaussian_blur(Image* img, float sigma);
+static void compute_gaussian_kernel_1d(float* kernel, int radius, float sigma);
+static Image* apply_gaussian_filter(const Image* img, float sigma);
+static void refine_alignment_with_candidates(const Image* ref_img, const Image* target_img,
+                                           int patch_y, int patch_x, int patch_size,
+                                           const AlignmentMap* prev_alignment,
+                                           float scale_factor, int prev_width, int prev_height,
+                                           float* best_x, float* best_y,
+                                           const BlockMatchingParams* params);
+static void save_refinement_visualization(const RefinementDebugInfo* debug_info, const char* output_dir);
 
 // Memory management functions
 Image* create_image_channels(int height, int width, int channels) {
@@ -134,7 +143,7 @@ Image* pad_image(const Image* img, int pad_top, int pad_bottom, int pad_left, in
     return padded;
 }
 
-Image* downsample_image(const Image* img, int factor) {
+Image* downsample_image(const Image* img, int factor, FilterMode filter_mode, float gaussian_sigma) {
     if (factor <= 1) {
         Image* copy = create_image(img->height, img->width);
         if (copy) {
@@ -143,10 +152,22 @@ Image* downsample_image(const Image* img, int factor) {
         return copy;
     }
 
+    // Apply pre-filtering if using Gaussian
+    Image* filtered_img = NULL;
+    if (filter_mode == FILTER_GAUSSIAN) {
+        filtered_img = apply_gaussian_filter(img, gaussian_sigma);
+        if (!filtered_img) return NULL;
+    } else {
+        filtered_img = (Image*)img;  // Use original for box filter
+    }
+
     int new_height = img->height / factor;
     int new_width = img->width / factor;
     Image* downsampled = create_image(new_height, new_width);
-    if (!downsampled) return NULL;
+    if (!downsampled) {
+        if (filter_mode == FILTER_GAUSSIAN) free_image(filtered_img);
+        return NULL;
+    }
 
     // Box filter downsampling
     float scale = 1.0f / (factor * factor);
@@ -157,13 +178,14 @@ Image* downsample_image(const Image* img, int factor) {
                 for (int kx = 0; kx < factor; kx++) {
                     int orig_y = y * factor + ky;
                     int orig_x = x * factor + kx;
-                    sum += img->data[orig_y * img->width + orig_x];
+                    sum += filtered_img->data[orig_y * filtered_img->width + orig_x];
                 }
             }
             downsampled->data[y * new_width + x] = sum * scale;
         }
     }
 
+    if (filter_mode == FILTER_GAUSSIAN) free_image(filtered_img);
     return downsampled;
 }
 
@@ -238,9 +260,12 @@ ImagePyramid* init_block_matching(const Image* ref_img, const BlockMatchingParam
 
     pyramid->levels[0] = padded;
 
-    // Create subsequent levels
+    // Create subsequent levels with specified filter mode
     for (int i = 1; i < params->num_levels; i++) {
-        pyramid->levels[i] = downsample_image(pyramid->levels[i-1], params->factors[i]);
+        pyramid->levels[i] = downsample_image(pyramid->levels[i-1], 
+                                            params->factors[i],
+                                            params->filter_mode,
+                                            params->gaussian_sigma);
         if (!pyramid->levels[i]) {
             free_image_pyramid(pyramid);
             return NULL;
@@ -368,19 +393,34 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
         }
 
         if (current_alignment) {
-            printf("Upscaling previous alignment\n");
-            // Upscale previous alignment
+            printf("Upscaling and refining previous alignment\n");
             float scale = (float)params->factors[level];
+            int prev_width = current_alignment->width;
+            int prev_height = current_alignment->height;
+            
+            // First do basic upscaling
             for (int y = 0; y < level_alignment->height; y++) {
                 for (int x = 0; x < level_alignment->width; x++) {
                     int prev_y = y / scale;
                     int prev_x = x / scale;
-                    level_alignment->data[y * level_alignment->width + x].x = 
-                        current_alignment->data[prev_y * current_alignment->width + prev_x].x * scale;
-                    level_alignment->data[y * level_alignment->width + x].y = 
-                        current_alignment->data[prev_y * current_alignment->width + prev_x].y * scale;
+                    
+                    // Test three candidates and get best alignment
+                    float refined_x, refined_y;
+                    refine_alignment_with_candidates(
+                        reference_pyramid->levels[level],
+                        target_pyramid->levels[level],
+                        y, x, tile_size,
+                        current_alignment,
+                        scale, prev_width, prev_height,
+                        &refined_x, &refined_y,
+                        params
+                    );
+                    
+                    level_alignment->data[y * level_alignment->width + x].x = refined_x;
+                    level_alignment->data[y * level_alignment->width + x].y = refined_y;
                 }
             }
+            
             free_alignment_map(current_alignment);
         }
 
@@ -434,6 +474,11 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
                 // Update alignment with relative displacement
                 level_alignment->data[py * level_alignment->width + px].x = best_x;
                 level_alignment->data[py * level_alignment->width + px].y = best_y;
+
+                if (params->debug_mode) {
+                    printf("Patch (%d,%d): Best alignment dx=%.2f dy=%.2f\n", 
+                           py, px, best_x, best_y);
+                }
             }
         }
 
@@ -443,3 +488,241 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
     free_image_pyramid(target_pyramid);
     return current_alignment;
 } 
+
+// Add these helper functions for Gaussian filtering
+static void compute_gaussian_kernel_1d(float* kernel, int radius, float sigma) {
+    int size = 2 * radius + 1;
+    float sum = 0.0f;
+    
+    for (int i = 0; i < size; i++) {
+        float x = (float)(i - radius);
+        kernel[i] = expf(-(x * x) / (2.0f * sigma * sigma));
+        sum += kernel[i];
+    }
+    
+    // Normalize kernel
+    for (int i = 0; i < size; i++) {
+        kernel[i] /= sum;
+    }
+}
+
+static Image* apply_gaussian_filter(const Image* img, float sigma) {
+    int radius = (int)(4.0f * sigma + 0.5f);  // Same as Python implementation
+    int kernel_size = 2 * radius + 1;
+    float* kernel = (float*)malloc(kernel_size * sizeof(float));
+    if (!kernel) return NULL;
+    
+    compute_gaussian_kernel_1d(kernel, radius, sigma);
+    
+    // Create temporary images for separable convolution
+    Image* temp = create_image(img->height, img->width);
+    Image* result = create_image(img->height, img->width);
+    if (!temp || !result) {
+        free(kernel);
+        free_image(temp);
+        free_image(result);
+        return NULL;
+    }
+    
+    // Horizontal pass
+    for (int y = 0; y < img->height; y++) {
+        for (int x = 0; x < img->width; x++) {
+            float sum = 0.0f;
+            float weight_sum = 0.0f;
+            
+            for (int k = -radius; k <= radius; k++) {
+                int xk = x + k;
+                if (xk >= 0 && xk < img->width) {
+                    float weight = kernel[k + radius];
+                    sum += img->data[y * img->width + xk] * weight;
+                    weight_sum += weight;
+                }
+            }
+            
+            temp->data[y * img->width + x] = sum / weight_sum;
+        }
+    }
+    
+    // Vertical pass
+    for (int y = 0; y < img->height; y++) {
+        for (int x = 0; x < img->width; x++) {
+            float sum = 0.0f;
+            float weight_sum = 0.0f;
+            
+            for (int k = -radius; k <= radius; k++) {
+                int yk = y + k;
+                if (yk >= 0 && yk < img->height) {
+                    float weight = kernel[k + radius];
+                    sum += temp->data[yk * img->width + x] * weight;
+                    weight_sum += weight;
+                }
+            }
+            
+            result->data[y * img->width + x] = sum / weight_sum;
+        }
+    }
+    
+    free(kernel);
+    free_image(temp);
+    return result;
+}
+
+static void refine_alignment_with_candidates(const Image* ref_img, const Image* target_img,
+                                           int patch_y, int patch_x, int patch_size,
+                                           const AlignmentMap* prev_alignment,
+                                           float scale_factor, int prev_width, int prev_height,
+                                           float* best_x, float* best_y,
+                                           const BlockMatchingParams* params) {
+    // Input validation
+    if (!ref_img || !target_img || !prev_alignment || !best_x || !best_y) {
+        fprintf(stderr, "Null pointer passed to refine_alignment_with_candidates\n");
+        return;
+    }
+
+    if (patch_size <= 0 || scale_factor <= 0) {
+        fprintf(stderr, "Invalid parameters: patch_size=%d, scale_factor=%f\n", 
+                patch_size, scale_factor);
+        return;
+    }
+
+    // Create debug info if needed
+    RefinementDebugInfo debug_info = {0};
+    if (params->save_refinement_debug) {
+        debug_info.patch_x = patch_x;
+        debug_info.patch_y = patch_y;
+    }
+    
+    // Get current patch position
+    int ref_patch_x = patch_x * patch_size;
+    int ref_patch_y = patch_y * patch_size;
+    
+    // Check patch bounds
+    if (ref_patch_x + patch_size > ref_img->width || 
+        ref_patch_y + patch_size > ref_img->height) {
+        fprintf(stderr, "Patch exceeds image bounds at (%d,%d)\n", patch_x, patch_y);
+        return;
+    }
+    
+    // Previous level indices
+    int prev_x = patch_x / scale_factor;
+    int prev_y = patch_y / scale_factor;
+    
+    if (prev_x >= prev_width || prev_y >= prev_height) {
+        fprintf(stderr, "Invalid previous level indices: (%d,%d)\n", prev_x, prev_y);
+        return;
+    }
+    
+    // Initialize with current alignment
+    float min_dist = FLT_MAX;
+    *best_x = prev_alignment->data[prev_y * prev_width + prev_x].x * scale_factor;
+    *best_y = prev_alignment->data[prev_y * prev_width + prev_x].y * scale_factor;
+    
+    if (params->save_refinement_debug) {
+        debug_info.original_x = *best_x;
+        debug_info.original_y = *best_y;
+    }
+    
+    // Test three candidates:
+    // 1. Current alignment
+    float dist = compute_patch_distance_l1(ref_img, target_img,
+                                         ref_patch_x, ref_patch_y,
+                                         ref_patch_x + (int)*best_x,
+                                         ref_patch_y + (int)*best_y,
+                                         patch_size);
+    min_dist = dist;
+    
+    if (params->save_refinement_debug) {
+        debug_info.distances[0] = dist;
+    }
+    
+    // 2. Vertical shift candidate
+    int vert_y_idx = prev_y + 1 < prev_height ? prev_y + 1 : prev_y - 1;
+    float vert_x_flow = prev_alignment->data[vert_y_idx * prev_width + prev_x].x * scale_factor;
+    float vert_y_flow = prev_alignment->data[vert_y_idx * prev_width + prev_x].y * scale_factor;
+    
+    if (params->save_refinement_debug) {
+        debug_info.vertical_x = vert_x_flow;
+        debug_info.vertical_y = vert_y_flow;
+    }
+    
+    dist = compute_patch_distance_l1(ref_img, target_img,
+                                   ref_patch_x, ref_patch_y,
+                                   ref_patch_x + (int)vert_x_flow,
+                                   ref_patch_y + (int)vert_y_flow,
+                                   patch_size);
+    if (params->save_refinement_debug) {
+        debug_info.distances[1] = dist;
+    }
+    
+    if (dist < min_dist) {
+        min_dist = dist;
+        *best_x = vert_x_flow;
+        *best_y = vert_y_flow;
+    }
+    
+    // 3. Horizontal shift candidate
+    int horiz_x_idx = prev_x + 1 < prev_width ? prev_x + 1 : prev_x - 1;
+    float horiz_x_flow = prev_alignment->data[prev_y * prev_width + horiz_x_idx].x * scale_factor;
+    float horiz_y_flow = prev_alignment->data[prev_y * prev_width + horiz_x_idx].y * scale_factor;
+    
+    if (params->save_refinement_debug) {
+        debug_info.horizontal_x = horiz_x_flow;
+        debug_info.horizontal_y = horiz_y_flow;
+    }
+    
+    dist = compute_patch_distance_l1(ref_img, target_img,
+                                   ref_patch_x, ref_patch_y,
+                                   ref_patch_x + (int)horiz_x_flow,
+                                   ref_patch_y + (int)horiz_y_flow,
+                                   patch_size);
+    if (params->save_refinement_debug) {
+        debug_info.distances[2] = dist;
+    }
+    
+    if (dist < min_dist) {
+        *best_x = horiz_x_flow;
+        *best_y = horiz_y_flow;
+    }
+
+    // Save debug visualization if enabled
+    if (params->save_refinement_debug) {
+        if (!params->debug_output_dir) {
+            fprintf(stderr, "Debug output directory not set\n");
+        } else {
+            debug_info.final_x = *best_x;
+            debug_info.final_y = *best_y;
+            save_refinement_visualization(&debug_info, params->debug_output_dir);
+        }
+    }
+}
+
+// Add visualization function
+static void save_refinement_visualization(const RefinementDebugInfo* debug_info, const char* output_dir) {
+    if (!debug_info || !output_dir) {
+        fprintf(stderr, "Invalid parameters passed to save_refinement_visualization\n");
+        return;
+    }
+
+    char filename[256];
+    snprintf(filename, sizeof(filename), "%s/refinement_patch_%d_%d.txt", 
+             output_dir, debug_info->patch_y, debug_info->patch_x);
+    
+    FILE* fp = fopen(filename, "w");
+    if (!fp) {
+        fprintf(stderr, "Failed to open debug file: %s\n", filename);
+        return;
+    }
+    
+    fprintf(fp, "Refinement Debug Info for Patch (%d,%d)\n", 
+            debug_info->patch_y, debug_info->patch_x);
+    fprintf(fp, "Original alignment: (%.2f, %.2f) - Distance: %.2f\n",
+            debug_info->original_x, debug_info->original_y, debug_info->distances[0]);
+    fprintf(fp, "Vertical candidate: (%.2f, %.2f) - Distance: %.2f\n",
+            debug_info->vertical_x, debug_info->vertical_y, debug_info->distances[1]);
+    fprintf(fp, "Horizontal candidate: (%.2f, %.2f) - Distance: %.2f\n",
+            debug_info->horizontal_x, debug_info->horizontal_y, debug_info->distances[2]);
+    fprintf(fp, "Final alignment: (%.2f, %.2f)\n",
+            debug_info->final_x, debug_info->final_y);
+    
+    fclose(fp);
+}

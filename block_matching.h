@@ -39,8 +39,14 @@ typedef struct {
 typedef struct {
     Image** levels;
     int num_levels;
-    float* factors;    // Downsampling factor for each level
+    int* factors;    // Keep as int* since we use integer factors
 } ImagePyramid;
+
+// Filter types for downsampling
+typedef enum {
+    FILTER_BOX,
+    FILTER_GAUSSIAN
+} FilterMode;
 
 // Block matching parameters
 typedef struct {
@@ -60,6 +66,10 @@ typedef struct {
     // Other parameters
     bool debug_mode;
     int max_iterations;
+    FilterMode filter_mode;     // Type of filter to use for downsampling
+    float gaussian_sigma;       // Sigma for Gaussian filter when used
+    bool save_refinement_debug;  // Whether to save refinement visualization
+    char* debug_output_dir;      // Directory for debug output
 } BlockMatchingParams;
 
 // Function declarations
@@ -70,7 +80,7 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
                                        const BlockMatchingParams* params);
 
 // Pyramid operations
-Image* downsample_image(const Image* img, int factor);
+Image* downsample_image(const Image* img, int factor, FilterMode filter_mode, float gaussian_sigma);
 Image* pad_image(const Image* img, int pad_top, int pad_bottom, int pad_left, int pad_right);
 
 // Distance metrics
@@ -100,5 +110,20 @@ void upsample_alignment_map(const AlignmentMap* src, AlignmentMap* dst,
 Image* create_image_channels(int height, int width, int channels);
 
 #define MAX_PYRAMID_LEVELS 10  // or whatever maximum makes sense for your use case
+
+// Add after other struct definitions
+typedef struct {
+    int patch_x;
+    int patch_y;
+    float original_x;
+    float original_y;
+    float vertical_x;
+    float vertical_y;
+    float horizontal_x;
+    float horizontal_y;
+    float final_x;
+    float final_y;
+    float distances[3];  // distances for each candidate
+} RefinementDebugInfo;
 
 #endif // BLOCK_MATCHING_H 

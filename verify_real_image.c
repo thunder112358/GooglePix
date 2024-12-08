@@ -206,7 +206,9 @@ int main(int argc, char* argv[]) {
         .pad_bottom = 0,
         .pad_left = 0,
         .pad_right = 0,
-        .debug_mode = true
+        .debug_mode = true,
+        .filter_mode = FILTER_GAUSSIAN,
+        .gaussian_sigma = 0.5f
     };
     printf("Initialized parameters\n");
     
