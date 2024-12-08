@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 #include <float.h>
@@ -287,28 +288,87 @@ static void search_best_match(const Image* ref_img, const Image* target_img,
 
 AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* reference_pyramid,
                                        const BlockMatchingParams* params) {
-    // Create pyramid for target image
-    ImagePyramid* target_pyramid = init_block_matching(img, params);
-    if (!target_pyramid) return NULL;
+    printf("Starting alignment with image dimensions: %dx%d\n", img->width, img->height);
+    if (!img || !reference_pyramid || !params) {
+        fprintf(stderr, "Null pointer passed to align_image_block_matching\n");
+        return NULL;
+    }
 
+    printf("Number of pyramid levels: %d\n", reference_pyramid->num_levels);
+    
+    // Create pyramid for target image with same parameters
+    ImagePyramid* target_pyramid = init_block_matching(img, params);
+    if (!target_pyramid) {
+        fprintf(stderr, "Failed to create target pyramid\n");
+        return NULL;
+    }
+    
     AlignmentMap* current_alignment = NULL;
     
     // Process from coarsest to finest level
     for (int level = params->num_levels - 1; level >= 0; level--) {
+        printf("Processing pyramid level %d\n", level);
+        
+        // Add validation for tile_sizes array
+        if (!params->tile_sizes) {
+            fprintf(stderr, "tile_sizes array is NULL\n");
+            free_image_pyramid(target_pyramid);
+            return NULL;
+        }
+        
         int tile_size = params->tile_sizes[level];
-        int n_patches_y = reference_pyramid->levels[level]->height / tile_size;
-        int n_patches_x = reference_pyramid->levels[level]->width / tile_size;
+        printf("Tile size: %d\n", tile_size);
+        
+        if (!reference_pyramid->levels[level]) {
+            fprintf(stderr, "Null reference pyramid level %d\n", level);
+            free_image_pyramid(target_pyramid);
+            return NULL;
+        }
 
-        // Create or upscale alignment map
-        AlignmentMap* level_alignment;
-        if (current_alignment) {
-            level_alignment = create_alignment_map(n_patches_y, n_patches_x, tile_size);
-            if (!level_alignment) {
+        if (!target_pyramid->levels[level]) {
+            fprintf(stderr, "Null target pyramid level %d\n", level);
+            free_image_pyramid(target_pyramid);
+            return NULL;
+        }
+        
+        // Add validation for image dimensions and tile size
+        /*
+        if (tile_size <= 0 || 
+            reference_pyramid->levels[level]->width % tile_size != 0 ||
+            reference_pyramid->levels[level]->height % tile_size != 0) 
+            {
+                fprintf(stderr, "Invalid tile size %d for level %d (dimensions: %dx%d)\n",
+                        tile_size, level,
+                        reference_pyramid->levels[level]->width,
+                        reference_pyramid->levels[level]->height);
                 free_image_pyramid(target_pyramid);
-                free_alignment_map(current_alignment);
                 return NULL;
             }
-            
+        */
+
+                fprintf(stderr, "Invalid tile size %d for level %d (dimensions: %dx%d)\n",
+                        tile_size, level,
+                        reference_pyramid->levels[level]->width,
+                        reference_pyramid->levels[level]->height);
+
+
+        int n_patches_y = (reference_pyramid->levels[level]->height + tile_size - 1) / tile_size;
+        int n_patches_x = (reference_pyramid->levels[level]->width + tile_size - 1) / tile_size;
+
+        
+        printf("Number of patches: %dx%d\n", n_patches_x, n_patches_y);
+
+        // Create or upscale alignment map
+        AlignmentMap* level_alignment = create_alignment_map(n_patches_y, n_patches_x, tile_size);
+        if (!level_alignment) {
+            fprintf(stderr, "Failed to create level alignment map\n");
+            if (current_alignment) free_alignment_map(current_alignment);
+            free_image_pyramid(target_pyramid);
+            return NULL;
+        }
+
+        if (current_alignment) {
+            printf("Upscaling previous alignment\n");
             // Upscale previous alignment
             float scale = (float)params->factors[level];
             for (int y = 0; y < level_alignment->height; y++) {
@@ -322,31 +382,58 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
                 }
             }
             free_alignment_map(current_alignment);
-        } else {
-            level_alignment = create_alignment_map(n_patches_y, n_patches_x, tile_size);
-            if (!level_alignment) {
-                free_image_pyramid(target_pyramid);
-                return NULL;
-            }
         }
 
+        printf("Starting block matching for level %d\n", level);
         // Perform block matching at current level
         for (int py = 0; py < n_patches_y; py++) {
             for (int px = 0; px < n_patches_x; px++) {
-                float current_x = level_alignment->data[py * n_patches_x + px].x;
-                float current_y = level_alignment->data[py * n_patches_x + px].y;
+                float current_x = level_alignment->data[py * level_alignment->width + px].x;
+                float current_y = level_alignment->data[py * level_alignment->width + px].y;
+                printf("current x = %f; current y = %f\n", current_x, current_y);
+
+                float best_x = current_x;
+                float best_y = current_y;
                 
-                float best_x, best_y;
-                search_best_match(reference_pyramid->levels[level],
-                                target_pyramid->levels[level],
-                                py, px, tile_size,
-                                params->search_radii[level],
-                                params->use_l1_dist[level],
-                                current_x, current_y,
-                                &best_x, &best_y);
+                // Search in neighborhood
+                float min_dist = FLT_MAX;
+                for (int dy = -params->search_radii[level]; dy <= params->search_radii[level]; dy++) {
+                    for (int dx = -params->search_radii[level]; dx <= params->search_radii[level]; dx++) {
+                        // Add boundary checks
+                        int target_x = px * tile_size + dx;
+                        int target_y = py * tile_size + dy;
+                        
+                        if (target_x < 0 || target_x + tile_size > target_pyramid->levels[level]->width ||
+                            target_y < 0 || target_y + tile_size > target_pyramid->levels[level]->height) {
+                            continue;  // Skip invalid positions
+                        }
+
+                        float dist;
+                        if (params->use_l1_dist[level]) {
+                            dist = compute_patch_distance_l1(reference_pyramid->levels[level],
+                                                          target_pyramid->levels[level],
+                                                          px * tile_size, py * tile_size,
+                                                          target_x, target_y,
+                                                          tile_size);
+                        } else {
+                            dist = compute_patch_distance_l2(reference_pyramid->levels[level],
+                                                          target_pyramid->levels[level],
+                                                          px * tile_size, py * tile_size,
+                                                          target_x, target_y,
+                                                          tile_size);
+                        }
+
+                        if (dist < min_dist) {
+                            min_dist = dist;
+                            best_x = dx;  // Store relative displacement
+                            best_y = dy;
+                        }
+                    }
+                }
                 
-                level_alignment->data[py * n_patches_x + px].x = best_x;
-                level_alignment->data[py * n_patches_x + px].y = best_y;
+                // Update alignment with relative displacement
+                level_alignment->data[py * level_alignment->width + px].x = best_x;
+                level_alignment->data[py * level_alignment->width + px].y = best_y;
             }
         }
 

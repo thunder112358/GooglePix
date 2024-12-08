@@ -99,4 +99,6 @@ void upsample_alignment_map(const AlignmentMap* src, AlignmentMap* dst,
 // Add this declaration if it's not already there
 Image* create_image_channels(int height, int width, int channels);
 
+#define MAX_PYRAMID_LEVELS 10  // or whatever maximum makes sense for your use case
+
 #endif // BLOCK_MATCHING_H 
