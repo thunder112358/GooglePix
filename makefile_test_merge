@@ -1,0 +1,19 @@
+CC = gcc
+CFLAGS = -Wall -O2 -g -fopenmp -I.
+LDFLAGS = -lm -fopenmp
+
+SRCS = test_merge.c merge.c kernels_common.c
+OBJS = $(SRCS:.c=.o)
+TARGET = test_merge
+
+$(TARGET): $(OBJS)
+	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
+
+%.o: %.c common.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJS) $(TARGET) *.ppm
+
+test: $(TARGET)
+	./$(TARGET)

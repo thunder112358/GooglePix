@@ -23,8 +23,10 @@
 #define EPSILON_DIV 1e-10f
 
 // Math utilities
-float clamp(float x, float min_val, float max_val) {
-    return fminf(fmaxf(x, min_val), max_val);
+float clamp(float value, float min, float max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
 }
 
 // Compute Mean Squared Error between two images

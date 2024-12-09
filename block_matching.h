@@ -9,25 +9,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "common.h"
-// Type definitions
-typedef float pixel_t;  // Default float type for pixel values
 
-// Image structure
-typedef struct {
-    pixel_t* data;
-    int height;
-    int width;
-    int channels;     // Number of color channels
-    int stride;       // Row stride in elements
-} Image;
-
-// Alignment vector
+// Block matching specific structures
 typedef struct {
     float x;  // Horizontal alignment
     float y;  // Vertical alignment
 } Alignment;
 
-// Alignment map for patches
 typedef struct {
     Alignment* data;
     int height;      // Number of patches in y direction

@@ -393,8 +393,12 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
         }
 
         if (current_alignment) {
-            printf("Upscaling and refining previous alignment\n");
+            printf("\n=== Upscaling Details ===\n");
+            printf("Current level: %d\n", level);
+            printf("Previous alignment dimensions: %dx%d\n", current_alignment->width, current_alignment->height);
+            printf("Current alignment dimensions: %dx%d\n", level_alignment->width, level_alignment->height);
             float scale = (float)params->factors[level];
+            printf("Scale factor: %.2f\n", scale);
             int prev_width = current_alignment->width;
             int prev_height = current_alignment->height;
             
@@ -404,6 +408,9 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
                     int prev_y = y / scale;
                     int prev_x = x / scale;
                     
+                    printf("Processing position (%d,%d) -> previous level (%d,%d)\n", 
+                           y, x, prev_y, prev_x);
+
                     // Test three candidates and get best alignment
                     float refined_x, refined_y;
                     refine_alignment_with_candidates(
@@ -415,6 +422,8 @@ AlignmentMap* align_image_block_matching(const Image* img, const ImagePyramid* r
                         &refined_x, &refined_y,
                         params
                     );
+                    
+                    printf("Refined alignment: (%.2f, %.2f)\n", refined_x, refined_y);
                     
                     level_alignment->data[y * level_alignment->width + x].x = refined_x;
                     level_alignment->data[y * level_alignment->width + x].y = refined_y;
@@ -573,6 +582,12 @@ static void refine_alignment_with_candidates(const Image* ref_img, const Image* 
                                            float scale_factor, int prev_width, int prev_height,
                                            float* best_x, float* best_y,
                                            const BlockMatchingParams* params) {
+    printf("\n=== Refinement Details ===\n");
+    printf("Patch position: (%d,%d)\n", patch_y, patch_x);
+    printf("Patch size: %d\n", patch_size);
+    printf("Scale factor: %.2f\n", scale_factor);
+    printf("Previous dimensions: %dx%d\n", prev_width, prev_height);
+
     // Input validation
     if (!ref_img || !target_img || !prev_alignment || !best_x || !best_y) {
         fprintf(stderr, "Null pointer passed to refine_alignment_with_candidates\n");
@@ -595,32 +610,23 @@ static void refine_alignment_with_candidates(const Image* ref_img, const Image* 
     // Get current patch position
     int ref_patch_x = patch_x * patch_size;
     int ref_patch_y = patch_y * patch_size;
-    
-    // Check patch bounds
-    if (ref_patch_x + patch_size > ref_img->width || 
-        ref_patch_y + patch_size > ref_img->height) {
-        fprintf(stderr, "Patch exceeds image bounds at (%d,%d)\n", patch_x, patch_y);
-        return;
-    }
+    printf("Reference patch coordinates: (%d,%d)\n", ref_patch_x, ref_patch_y);
     
     // Previous level indices
-    int prev_x = patch_x / scale_factor;
-    int prev_y = patch_y / scale_factor;
+    int prev_x = (int)(patch_x / scale_factor);
+    int prev_y = (int)(patch_y / scale_factor);
+    printf("Previous level indices: (%d,%d)\n", prev_x, prev_y);
     
-    if (prev_x >= prev_width || prev_y >= prev_height) {
-        fprintf(stderr, "Invalid previous level indices: (%d,%d)\n", prev_x, prev_y);
+    if (prev_x < 0 || prev_x >= prev_width || prev_y < 0 || prev_y >= prev_height) {
+        fprintf(stderr, "Invalid previous level indices: (%d,%d) for dimensions %dx%d\n",
+                prev_x, prev_y, prev_width, prev_height);
         return;
     }
-    
+
     // Initialize with current alignment
-    float min_dist = FLT_MAX;
     *best_x = prev_alignment->data[prev_y * prev_width + prev_x].x * scale_factor;
     *best_y = prev_alignment->data[prev_y * prev_width + prev_x].y * scale_factor;
-    
-    if (params->save_refinement_debug) {
-        debug_info.original_x = *best_x;
-        debug_info.original_y = *best_y;
-    }
+    printf("Initial alignment: (%.2f, %.2f)\n", *best_x, *best_y);
     
     // Test three candidates:
     // 1. Current alignment
@@ -629,7 +635,7 @@ static void refine_alignment_with_candidates(const Image* ref_img, const Image* 
                                          ref_patch_x + (int)*best_x,
                                          ref_patch_y + (int)*best_y,
                                          patch_size);
-    min_dist = dist;
+    float min_dist = dist;
     
     if (params->save_refinement_debug) {
         debug_info.distances[0] = dist;
@@ -694,6 +700,8 @@ static void refine_alignment_with_candidates(const Image* ref_img, const Image* 
             save_refinement_visualization(&debug_info, params->debug_output_dir);
         }
     }
+
+    printf("Final alignment: (%.2f, %.2f)\n", *best_x, *best_y);
 }
 
 // Add visualization function

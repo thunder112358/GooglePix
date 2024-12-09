@@ -5,6 +5,101 @@
 #include "robustness.h"
 #include "linalg.h"
 
+// Add debug logging and error checking macros
+#ifdef DEBUG_ROBUSTNESS
+#define LOG_DEBUG(fmt, ...) fprintf(stderr, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+#define LOG_DEBUG(fmt, ...)
+#endif
+
+#define CHECK_NULL(ptr, msg) do { \
+    if (!(ptr)) { \
+        fprintf(stderr, "Error: %s is NULL\n", msg); \
+        return NULL; \
+    } \
+} while(0)
+
+#define CHECK_ALLOC(ptr, msg) do { \
+    if (!(ptr)) { \
+        fprintf(stderr, "Error: Failed to allocate memory for %s\n", msg); \
+        return NULL; \
+    } \
+} while(0)
+
+// Add validation helper
+static bool validate_params(const RobustnessParams* params) {
+    if (!params) {
+        fprintf(stderr, "Error: NULL robustness parameters\n");
+        return false;
+    }
+    
+    if (params->window_size <= 0 || params->window_size % 2 == 0) {
+        fprintf(stderr, "Error: Invalid window size %d (must be positive odd)\n", 
+                params->window_size);
+        return false;
+    }
+    
+    if (params->epsilon <= 0.0f) {
+        fprintf(stderr, "Error: Invalid epsilon %f (must be positive)\n", 
+                params->epsilon);
+        return false;
+    }
+    
+    if (params->bayer_mode && !params->cfa_pattern) {
+        fprintf(stderr, "Error: Bayer mode enabled but no CFA pattern provided\n");
+        return false;
+    }
+    
+    if (params->noise.curve_size <= 0) {
+        fprintf(stderr, "Error: Invalid noise curve size %d\n", 
+                params->noise.curve_size);
+        return false;
+    }
+    
+    return true;
+}
+
+// Add image validation helper
+static bool validate_image(const Image* img, const char* name) {
+    if (!img) {
+        fprintf(stderr, "Error: NULL %s image\n", name);
+        return false;
+    }
+    
+    if (!img->data) {
+        fprintf(stderr, "Error: NULL data in %s image\n", name);
+        return false;
+    }
+    
+    if (img->width <= 0 || img->height <= 0) {
+        fprintf(stderr, "Error: Invalid dimensions %dx%d in %s image\n",
+                img->width, img->height, name);
+        return false;
+    }
+    
+    return true;
+}
+
+// Add noise model validation
+static bool validate_noise_model(const NoiseModel* noise) {
+    if (!noise) {
+        fprintf(stderr, "Error: NULL noise model\n");
+        return false;
+    }
+    
+    if (!noise->std_curve || !noise->diff_curve) {
+        fprintf(stderr, "Error: NULL noise curves\n");
+        return false;
+    }
+    
+    if (noise->curve_size <= 0) {
+        fprintf(stderr, "Error: Invalid noise curve size %d\n", noise->curve_size);
+        return false;
+    }
+    
+    return true;
+}
+
 // Helper function to compute Dogson quadratic kernel
 float dogson_quadratic_kernel(float x) {
     float abs_x = fabsf(x);
@@ -23,15 +118,19 @@ float dogson_biquadratic_kernel(float x, float y) {
 
 // Initialize robustness computation
 LocalStats* init_robustness(const Image* image, const RobustnessParams* params) {
-    if (!image || !params || !params->enabled) {
+    // Validate inputs
+    if (!validate_image(image, "input") || !validate_params(params)) {
+        return NULL;
+    }
+    
+    if (!params->enabled) {
+        LOG_DEBUG("Robustness disabled, returning NULL");
         return NULL;
     }
 
     // Allocate local statistics structure
     LocalStats* stats = (LocalStats*)malloc(sizeof(LocalStats));
-    if (!stats) {
-        return NULL;
-    }
+    CHECK_ALLOC(stats, "local statistics");
 
     stats->height = image->height;
     stats->width = image->width;
@@ -43,12 +142,17 @@ LocalStats* init_robustness(const Image* image, const RobustnessParams* params) 
     stats->stds = (float*)malloc(size);
 
     if (!stats->means || !stats->stds) {
+        fprintf(stderr, "Error: Failed to allocate memory for statistics arrays\n");
         free_local_stats(stats);
         return NULL;
     }
 
     // Compute local statistics
     compute_local_statistics(image, params, stats->means, stats->stds);
+    
+    LOG_DEBUG("Initialized robustness for %dx%d image with %d channels",
+              stats->width, stats->height, stats->channels);
+    
     return stats;
 }
 
@@ -103,15 +207,34 @@ void compute_local_statistics(const Image* image,
 }
 
 // Compute robustness map
-float* compute_robustness(const Image* image,
-                         const LocalStats* ref_stats,
-                         const AlignmentMap* alignment,
-                         const RobustnessParams* params) {
-    if (!image || !ref_stats || !alignment || !params || !params->enabled) {
+float* compute_robustness(const Image* image, const LocalStats* ref_stats,
+                         const AlignmentMap* alignment, const RobustnessParams* params) {
+    // Validate all inputs
+    if (!validate_image(image, "input") || 
+        !validate_params(params) ||
+        !alignment) {
+        return NULL;
+    }
+    
+    if (!params->enabled) {
+        LOG_DEBUG("Robustness disabled, returning NULL");
+        return NULL;
+    }
+    
+    if (!ref_stats || !ref_stats->means || !ref_stats->stds) {
+        fprintf(stderr, "Error: Invalid reference statistics\n");
+        return NULL;
+    }
+    
+    // Validate dimensions match
+    if (image->height != ref_stats->height || 
+        image->width != ref_stats->width ||
+        image->channels != ref_stats->channels) {
+        fprintf(stderr, "Error: Dimension mismatch between image and reference stats\n");
         return NULL;
     }
 
-    // Allocate memory for intermediate results
+    // Allocate memory for intermediate results with error checking
     const int height = image->height;
     const int width = image->width;
     float* d_sq = (float*)malloc(height * width * sizeof(float));
@@ -121,11 +244,8 @@ float* compute_robustness(const Image* image,
     float* r = (float*)malloc(height * width * sizeof(float));
 
     if (!d_sq || !sigma_sq || !S || !R || !r) {
-        free(d_sq);
-        free(sigma_sq);
-        free(S);
-        free(R);
-        free(r);
+        fprintf(stderr, "Error: Failed to allocate memory for robustness computation\n");
+        free(d_sq); free(sigma_sq); free(S); free(R); free(r);
         return NULL;
     }
 
@@ -204,6 +324,8 @@ float* compute_robustness(const Image* image,
     free(S);
     free(R);
 
+    LOG_DEBUG("Computing robustness for %dx%d image", width, height);
+    
     return r;
 }
 
@@ -242,6 +364,93 @@ static void compute_flow_irregularity(const AlignmentMap* flow,
 
             // Apply flow irregularity threshold
             S[y * width + x] = (diff_sq > params->mt * params->mt) ? params->s1 : params->s2;
+        }
+    }
+}
+
+GuideImage* compute_guide_image(const Image* raw_img, const int* cfa_pattern) {
+    if (!raw_img || !cfa_pattern) return NULL;
+
+    GuideImage* guide = (GuideImage*)malloc(sizeof(GuideImage));
+    if (!guide) return NULL;
+
+    // For Bayer pattern, output is half size with 3 channels
+    guide->height = raw_img->height / 2;
+    guide->width = raw_img->width / 2;
+    guide->channels = 3;
+    guide->data = (float*)malloc(guide->height * guide->width * guide->channels * sizeof(float));
+
+    if (!guide->data) {
+        free(guide);
+        return NULL;
+    }
+
+    // Process each 2x2 Bayer quad
+    #pragma omp parallel for collapse(2)
+    for (int y = 0; y < guide->height; y++) {
+        for (int x = 0; x < guide->width; x++) {
+            float g = 0.0f;
+            
+            // Process each pixel in the quad
+            for (int i = 0; i < 2; i++) {
+                for (int j = 0; j < 2; j++) {
+                    int raw_y = 2*y + i;
+                    int raw_x = 2*x + j;
+                    float val = raw_img->data[raw_y * raw_img->width + raw_x];
+                    
+                    int color = cfa_pattern[i * 2 + j];
+                    if (color == 1) { // Green
+                        g += val;
+                    } else { // Red or Blue
+                        guide->data[(y * guide->width + x) * 3 + color] = val;
+                    }
+                }
+            }
+            
+            // Store average green
+            guide->data[(y * guide->width + x) * 3 + 1] = g / 2.0f;
+        }
+    }
+
+    return guide;
+}
+
+void free_guide_image(GuideImage* guide) {
+    if (guide) {
+        free(guide->data);
+        free(guide);
+    }
+}
+
+void apply_noise_model(const float* d_p, const float* ref_means, const float* ref_stds,
+                      const NoiseModel* noise, float* d_sq, float* sigma_sq,
+                      int height, int width, int channels) {
+    #pragma omp parallel for collapse(2)
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            float d_sq_sum = 0.0f;
+            float sigma_sq_sum = 0.0f;
+
+            for (int c = 0; c < channels; c++) {
+                int idx = (y * width + x) * channels + c;
+                float brightness = ref_means[idx];
+                int noise_idx = (int)(1000.0f * brightness);
+                if (noise_idx >= noise->curve_size) noise_idx = noise->curve_size - 1;
+
+                float d_t = noise->diff_curve[noise_idx];
+                float sigma_t = noise->std_curve[noise_idx];
+                float sigma_p_sq = ref_stds[idx];
+                
+                sigma_sq_sum += fmaxf(sigma_p_sq, sigma_t * sigma_t);
+
+                float d_p_val = d_p[idx];
+                float d_p_sq = d_p_val * d_p_val;
+                float shrink = d_p_sq / (d_p_sq + d_t * d_t);
+                d_sq_sum += d_p_sq * shrink * shrink;
+            }
+
+            d_sq[y * width + x] = d_sq_sum;
+            sigma_sq[y * width + x] = sigma_sq_sum;
         }
     }
 } 

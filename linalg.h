@@ -3,12 +3,7 @@
 
 #include <stdbool.h>
 #include "utils.h"
-
-// Matrix structure for 2x2 systems
-typedef struct {
-    float a11, a12;
-    float a21, a22;
-} Matrix2x2;
+#include "common.h"
 
 // Vector structure for 2D vectors
 typedef struct {
@@ -38,5 +33,16 @@ void gaussian_blur(float* image, int height, int width, float sigma);
 // Helper functions
 float gaussian_kernel_1d(float x, float sigma);
 void create_gaussian_kernel(float* kernel, int size, float sigma);
+
+// Eigenvalue/eigenvector computation
+void get_real_polyroots_2(float a, float b, float c, float* roots);
+void get_eigen_val_2x2(const Matrix2x2* M, float* eigenvals);
+void get_eigen_vect_2x2(const Matrix2x2* M, const float* eigenvals, 
+                        Vector2D* e1, Vector2D* e2);
+void get_eigen_elmts_2x2(const Matrix2x2* M, float* eigenvals, 
+                        Vector2D* e1, Vector2D* e2);
+float quad_mat_prod(const Matrix2x2* A, float x1, float x2);
+void interpolate_cov(const Matrix2x2 covs[2][2], const Vector2D* center_pos, 
+                    Matrix2x2* interpolated_cov);
 
 #endif // LINALG_H 

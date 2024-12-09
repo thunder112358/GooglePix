@@ -2,8 +2,10 @@
 #define ROBUSTNESS_H
 
 #include <stdbool.h>
+#include <math.h>
 #include "utils.h"
 #include "block_matching.h"
+#include "linalg.h"  // For Matrix2x2 and bilinear_interpolate
 
 // Robustness parameters structure
 typedef struct {
@@ -14,6 +16,9 @@ typedef struct {
     int mt;                // Mt parameter
     int window_size;       // Size of local statistics window
     float epsilon;         // Small value to prevent division by zero
+    NoiseModel noise;      // Noise model parameters
+    bool bayer_mode;       // Whether input is Bayer pattern
+    int* cfa_pattern;      // CFA pattern for Bayer mode
 } RobustnessParams;
 
 // Local statistics structure
@@ -24,6 +29,21 @@ typedef struct {
     int width;             // Image width
     int channels;          // Number of channels
 } LocalStats;
+
+// Add noise model structure
+typedef struct {
+    float* std_curve;     // Noise model for sigma
+    float* diff_curve;    // Noise model for d
+    int curve_size;       // Size of noise curves (typically 1000)
+} NoiseModel;
+
+// Add guide image structure
+typedef struct {
+    float* data;
+    int height;
+    int width;
+    int channels;
+} GuideImage;
 
 // Function declarations
 LocalStats* init_robustness(const Image* image, const RobustnessParams* params);
@@ -46,5 +66,15 @@ void compute_local_statistics(const Image* image,
 // Utility functions
 float dogson_biquadratic_kernel(float x, float y);
 float dogson_quadratic_kernel(float x);
+
+// Add function declarations
+GuideImage* compute_guide_image(const Image* raw_img, const int* cfa_pattern);
+void free_guide_image(GuideImage* guide);
+void compute_local_min_5x5(const float* input, float* output, int height, int width);
+void apply_noise_model(const float* d_p, const float* ref_means, const float* ref_stds,
+                      const NoiseModel* noise, float* d_sq, float* sigma_sq,
+                      int height, int width, int channels);
+void compute_flow_irregularity(const AlignmentMap* flow, const RobustnessParams* params,
+                             float* S);
 
 #endif // ROBUSTNESS_H 

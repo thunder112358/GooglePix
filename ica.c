@@ -4,6 +4,7 @@
 #include <float.h>
 #include <stdio.h>
 #include "ica.h"
+#include "block_matching.h"
 
 // Add function declaration at the top
 static float clamp(float x, float min_val, float max_val);

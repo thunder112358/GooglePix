@@ -1,9 +1,7 @@
 #ifndef MERGE_H
 #define MERGE_H
 
-#include "utils.h"
-#include "kernels.h"
-#include "robustness.h"
+#include "common.h"
 
 // Merge parameters structure
 typedef struct {
@@ -13,6 +11,14 @@ typedef struct {
     float noise_sigma;         // Noise standard deviation
     bool use_robustness;       // Whether to use robustness weights
     bool use_kernels;          // Whether to use steerable kernels
+    float scale;              // Scale factor for output
+    bool bayer_mode;          // Whether input is Bayer pattern
+    bool iso_kernel;          // Whether to use isotropic kernel
+    int tile_size;            // Size of alignment tiles
+    int* cfa_pattern;         // CFA pattern for Bayer mode
+    NoiseModel noise;         // Noise model parameters
+    bool use_acc_rob;         // Whether to use accumulated robustness
+    float max_multiplier;     // Maximum multiplier for robustness
 } MergeParams;
 
 // Merge accumulator structure
@@ -28,7 +34,6 @@ typedef struct {
 MergeAccumulator* create_merge_accumulator(int height, int width, int channels);
 void free_merge_accumulator(MergeAccumulator* acc);
 
-// Main merge functions
 void merge_image(const Image* image,
                 const SteerableKernels* kernels,
                 const float* robustness,
@@ -39,7 +44,6 @@ void merge_reference(const Image* ref_image,
                     MergeAccumulator* acc,
                     const MergeParams* params);
 
-// Helper functions
 void compute_merge_weights(const Image* image,
                          const SteerableKernels* kernels,
                          const float* robustness,
@@ -47,8 +51,6 @@ void compute_merge_weights(const Image* image,
                          const MergeParams* params);
 
 void normalize_accumulator(MergeAccumulator* acc);
-
-// Final image reconstruction
 Image* reconstruct_merged_image(const MergeAccumulator* acc);
 
 #endif // MERGE_H 

@@ -103,62 +103,152 @@ void compute_merge_weights(const Image* image,
 }
 
 // Merge image into accumulator
-void merge_image(const Image* image,
-                const SteerableKernels* kernels,
-                const float* robustness,
-                MergeAccumulator* acc,
+void merge_image(const Image* image, const SteerableKernels* kernels,
+                const float* robustness, MergeAccumulator* acc,
                 const MergeParams* params) {
     if (!image || !acc || !params) return;
 
     const int height = image->height;
     const int width = image->width;
     const int channels = image->channels;
+    const float scale = params->scale;
+    const int output_height = (int)(height * scale);
+    const int output_width = (int)(width * scale);
 
-    // Compute weights
-    float* weights = (float*)malloc(height * width * sizeof(float));
-    if (!weights) return;
+    // Process each output pixel
+    #pragma omp parallel for collapse(2)
+    for (int y = 0; y < output_height; y++) {
+        for (int x = 0; x < output_width; x++) {
+            // Compute input image position
+            float ref_y = y / scale;
+            float ref_x = x / scale;
+            
+            // Get patch position
+            int patch_y = (int)(ref_y / params->tile_size);
+            int patch_x = (int)(ref_x / params->tile_size);
 
-    compute_merge_weights(image, kernels, robustness, weights, params);
+            // Get robustness value
+            float rob = robustness ? robustness[(int)(ref_y + 0.5f) * width + (int)(ref_x + 0.5f)] : 1.0f;
 
-    // Accumulate weighted image
-    #pragma omp parallel for collapse(3)
-    for (int c = 0; c < channels; c++) {
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int idx = (y * width + x) * channels + c;
-                float weight = weights[y * width + x];
-                acc->numerator[idx] += weight * image->data[idx];
-                acc->denominator[idx] += weight;
+            // For each channel
+            for (int c = 0; c < channels; c++) {
+                float sum = 0.0f;
+                float weight_sum = 0.0f;
+
+                // Process neighborhood
+                int center_x = (int)(ref_x + 0.5f);
+                int center_y = (int)(ref_y + 0.5f);
+                int rad = 1;
+
+                for (int dy = -rad; dy <= rad; dy++) {
+                    for (int dx = -rad; dx <= rad; dx++) {
+                        int px = center_x + dx;
+                        int py = center_y + dy;
+
+                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                            float val = image->data[(py * width + px) * channels + c];
+                            
+                            // Compute distance and weight
+                            float dist_x = px - ref_x;
+                            float dist_y = py - ref_y;
+                            float dist_sq = dist_x * dist_x + dist_y * dist_y;
+                            
+                            float weight;
+                            if (params->iso_kernel) {
+                                weight = expf(-2.0f * dist_sq);
+                            } else {
+                                // Use anisotropic kernel if available
+                                weight = expf(-0.5f * dist_sq);
+                            }
+
+                            weight *= rob;  // Apply robustness
+
+                            sum += val * weight;
+                            weight_sum += weight;
+                        }
+                    }
+                }
+
+                // Accumulate
+                int out_idx = (y * output_width + x) * channels + c;
+                acc->numerator[out_idx] += sum;
+                acc->denominator[out_idx] += weight_sum;
             }
         }
     }
+}
 
-    free(weights);
+// Helper functions for merge
+static float denoise_power_merge(float acc_rob, float max_multiplier, int max_frame_count) {
+    if (acc_rob >= max_frame_count) return 1.0f;
+    return max_multiplier - (max_multiplier - 1.0f) * acc_rob / max_frame_count;
+}
+
+static float denoise_range_merge(float acc_rob, float rad_max, int max_frame_count) {
+    if (acc_rob >= max_frame_count) return 1.0f;
+    return rad_max - (rad_max - 1.0f) * acc_rob / max_frame_count;
 }
 
 // Merge reference image
-void merge_reference(const Image* ref_image,
-                    MergeAccumulator* acc,
-                    const MergeParams* params) {
-    if (!ref_image || !acc || !params) return;
+void merge_reference(const Image* ref_img, MergeAccumulator* acc, const MergeParams* params) {
+    if (!ref_img || !acc || !params) return;
 
-    // For reference image, use simplified merging with uniform weights
-    const int height = ref_image->height;
-    const int width = ref_image->width;
-    const int channels = ref_image->channels;
+    const int height = ref_img->height;
+    const int width = ref_img->width;
+    const int channels = ref_img->channels;
+    const float scale = params->scale;
+    const int output_height = (int)(height * scale);
+    const int output_width = (int)(width * scale);
 
-    float ref_weight = params->power_max;  // Use maximum weight for reference
-    if (params->noise_sigma > 0.0f) {
-        ref_weight *= 1.0f / (1.0f + params->noise_sigma * params->noise_sigma);
-    }
+    // Process each output pixel
+    #pragma omp parallel for collapse(2)
+    for (int y = 0; y < output_height; y++) {
+        for (int x = 0; x < output_width; x++) {
+            // Compute input image position
+            float ref_y = y / scale;
+            float ref_x = x / scale;
+            
+            // For each channel
+            for (int c = 0; c < channels; c++) {
+                float sum = 0.0f;
+                float weight_sum = 0.0f;
 
-    #pragma omp parallel for collapse(3)
-    for (int c = 0; c < channels; c++) {
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int idx = (y * width + x) * channels + c;
-                acc->numerator[idx] += ref_weight * ref_image->data[idx];
-                acc->denominator[idx] += ref_weight;
+                // Process neighborhood
+                int center_x = (int)(ref_x + 0.5f);
+                int center_y = (int)(ref_y + 0.5f);
+                int rad = 1;  // Default radius for reference image
+
+                for (int dy = -rad; dy <= rad; dy++) {
+                    for (int dx = -rad; dx <= rad; dx++) {
+                        int px = center_x + dx;
+                        int py = center_y + dy;
+
+                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                            float val = ref_img->data[(py * width + px) * channels + c];
+                            
+                            // Compute distance and weight
+                            float dist_x = px - ref_x;
+                            float dist_y = py - ref_y;
+                            float dist_sq = dist_x * dist_x + dist_y * dist_y;
+                            
+                            float weight;
+                            if (params->iso_kernel) {
+                                weight = expf(-2.0f * dist_sq);
+                            } else {
+                                // Use anisotropic kernel if available
+                                weight = expf(-0.5f * dist_sq);
+                            }
+
+                            sum += val * weight;
+                            weight_sum += weight;
+                        }
+                    }
+                }
+
+                // Accumulate
+                int out_idx = (y * output_width + x) * channels + c;
+                acc->numerator[out_idx] += sum;
+                acc->denominator[out_idx] += weight_sum;
             }
         }
     }

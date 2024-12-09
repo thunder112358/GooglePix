@@ -3,6 +3,33 @@
 #include <math.h>
 #include "linalg.h"
 
+// Add debug logging macro
+#ifdef DEBUG_LINALG
+#define LOG_DEBUG(fmt, ...) fprintf(stderr, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+#define LOG_DEBUG(fmt, ...)
+#endif
+
+// Add error checking for matrix operations
+static bool is_valid_matrix(const Matrix2x2* M) {
+    if (!M) return false;
+    // Check for NaN values
+    if (isnan(M->a11) || isnan(M->a12) || 
+        isnan(M->a21) || isnan(M->a22)) {
+        return false;
+    }
+    return true;
+}
+
+// Compute determinant of 2x2 matrix
+float matrix2x2_determinant(const Matrix2x2* A) {
+    if (!is_valid_matrix(A)) {
+        LOG_DEBUG("Invalid matrix in determinant computation");
+        return 0.0f;
+    }
+    return A->a11 * A->a22 - A->a12 * A->a21;
+}
+
 // Solve 2x2 linear system Ax = b
 void solve_2x2(const Matrix2x2* A, const Vector2D* b, Vector2D* x) {
     float det = matrix2x2_determinant(A);
@@ -16,11 +43,6 @@ void solve_2x2(const Matrix2x2* A, const Vector2D* b, Vector2D* x) {
     // Cramer's rule
     x->x = (b->x * A->a22 - b->y * A->a12) / det;
     x->y = (A->a11 * b->y - A->a21 * b->x) / det;
-}
-
-// Compute determinant of 2x2 matrix
-float matrix2x2_determinant(const Matrix2x2* A) {
-    return A->a11 * A->a22 - A->a12 * A->a21;
 }
 
 // Compute inverse of 2x2 matrix
@@ -192,3 +214,169 @@ void gaussian_blur(float* image, int height, int width, float sigma) {
 
     free(kernel);
 } 
+
+float quad_mat_prod(const Matrix2x2* A, float x1, float x2) {
+    if (!is_valid_matrix(A)) {
+        LOG_DEBUG("Invalid matrix in quad_mat_prod");
+        return 0.0f;
+    }
+    
+    float result = A->a11 * x1 * x1 + 
+                  (A->a12 + A->a21) * x1 * x2 + 
+                  A->a22 * x2 * x2;
+    
+    LOG_DEBUG("quad_mat_prod: [%.3f %.3f; %.3f %.3f] * [%.3f; %.3f] = %.3f",
+              A->a11, A->a12, A->a21, A->a22, x1, x2, result);
+    return result;
+}
+
+void get_eigen_val_2x2(const Matrix2x2* M, float* eigenvals) {
+    if (!is_valid_matrix(M) || !eigenvals) {
+        LOG_DEBUG("Invalid input to get_eigen_val_2x2");
+        if (eigenvals) {
+            eigenvals[0] = eigenvals[1] = 0.0f;
+        }
+        return;
+    }
+
+    float a = 1.0f;
+    float b = -(M->a11 + M->a22);
+    float c = M->a11 * M->a22 - M->a12 * M->a21;
+    
+    LOG_DEBUG("Characteristic equation: x^2 + %.3fx + %.3f = 0", b, c);
+    get_real_polyroots_2(a, b, c, eigenvals);
+    
+    LOG_DEBUG("Eigenvalues: %.3f, %.3f", eigenvals[0], eigenvals[1]);
+}
+
+void get_real_polyroots_2(float a, float b, float c, float* roots) {
+    // Ensure delta is not negative due to numerical instability
+    float delta = fmaxf(b*b - 4*a*c, 0.0f);
+    float sqrt_delta = sqrtf(delta);
+    
+    float r1 = (-b + sqrt_delta)/(2*a);
+    float r2 = (-b - sqrt_delta)/(2*a);
+    
+    // Sort by magnitude
+    if (fabsf(r1) >= fabsf(r2)) {
+        roots[0] = r1;
+        roots[1] = r2;
+    } else {
+        roots[0] = r2;
+        roots[1] = r1;
+    }
+}
+
+void get_eigen_vect_2x2(const Matrix2x2* M, const float* eigenvals, 
+                        Vector2D* e1, Vector2D* e2) {
+    if (!is_valid_matrix(M) || !eigenvals || !e1 || !e2) {
+        LOG_DEBUG("Invalid input to get_eigen_vect_2x2");
+        return;
+    }
+
+    LOG_DEBUG("Computing eigenvectors for matrix [%.3f %.3f; %.3f %.3f]",
+              M->a11, M->a12, M->a21, M->a22);
+
+    if (M->a12 == 0.0f && M->a11 == M->a22) {
+        LOG_DEBUG("Matrix is multiple of identity");
+        e1->x = 1.0f; e1->y = 0.0f;
+        e2->x = 0.0f; e2->y = 1.0f;
+    } else {
+        // Compute first eigenvector
+        e1->x = M->a11 + M->a12 - eigenvals[1];
+        e1->y = M->a21 + M->a22 - eigenvals[1];
+        
+        if (e1->x == 0.0f) {
+            e1->y = 1.0f;
+            e2->x = 1.0f;
+            e2->y = 0.0f;
+        } else if (e1->y == 0.0f) {
+            e1->x = 1.0f;
+            e2->x = 0.0f;
+            e2->y = 1.0f;
+        } else {
+            // Normalize first eigenvector
+            float norm = sqrtf(e1->x * e1->x + e1->y * e1->y);
+            e1->x /= norm;
+            e1->y /= norm;
+            
+            // Compute second eigenvector (orthogonal to first)
+            float sign = (e1->x >= 0.0f) ? 1.0f : -1.0f;
+            e2->y = fabsf(e1->x);
+            e2->x = -e1->y * sign;
+        }
+    }
+
+    LOG_DEBUG("Eigenvector 1: [%.3f; %.3f]", e1->x, e1->y);
+    LOG_DEBUG("Eigenvector 2: [%.3f; %.3f]", e2->x, e2->y);
+}
+
+void get_eigen_elmts_2x2(const Matrix2x2* M, float* eigenvals, 
+                        Vector2D* e1, Vector2D* e2) {
+    get_eigen_val_2x2(M, eigenvals);
+    get_eigen_vect_2x2(M, eigenvals, e1, e2);
+}
+
+void interpolate_cov(const Matrix2x2 covs[2][2], const Vector2D* center_pos, 
+                    Matrix2x2* interpolated_cov) {
+    if (!covs || !center_pos || !interpolated_cov) {
+        LOG_DEBUG("Invalid input to interpolate_cov");
+        return;
+    }
+
+    // Validate input matrices
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            if (!is_valid_matrix(&covs[i][j])) {
+                LOG_DEBUG("Invalid covariance matrix at position [%d][%d]", i, j);
+                return;
+            }
+        }
+    }
+
+    float pos_x = center_pos->x - floorf(center_pos->x);
+    float pos_y = center_pos->y - floorf(center_pos->y);
+    
+    LOG_DEBUG("Interpolating at position (%.3f, %.3f)", pos_x, pos_y);
+
+    // Compute weights
+    float w00 = (1-pos_x) * (1-pos_y);
+    float w01 = pos_x * (1-pos_y);
+    float w10 = (1-pos_x) * pos_y;
+    float w11 = pos_x * pos_y;
+
+    LOG_DEBUG("Interpolation weights: %.3f, %.3f, %.3f, %.3f", 
+              w00, w01, w10, w11);
+
+    // For a11
+    interpolated_cov->a11 = 
+        covs[0][0].a11 * w00 +
+        covs[0][1].a11 * w01 +
+        covs[1][0].a11 * w10 +
+        covs[1][1].a11 * w11;
+    
+    // For a12
+    interpolated_cov->a12 = 
+        covs[0][0].a12 * w00 +
+        covs[0][1].a12 * w01 +
+        covs[1][0].a12 * w10 +
+        covs[1][1].a12 * w11;
+    
+    // For a21
+    interpolated_cov->a21 = 
+        covs[0][0].a21 * w00 +
+        covs[0][1].a21 * w01 +
+        covs[1][0].a21 * w10 +
+        covs[1][1].a21 * w11;
+    
+    // For a22
+    interpolated_cov->a22 = 
+        covs[0][0].a22 * w00 +
+        covs[0][1].a22 * w01 +
+        covs[1][0].a22 * w10 +
+        covs[1][1].a22 * w11;
+
+    LOG_DEBUG("Interpolated matrix: [%.3f %.3f; %.3f %.3f]",
+              interpolated_cov->a11, interpolated_cov->a12,
+              interpolated_cov->a21, interpolated_cov->a22);
+}

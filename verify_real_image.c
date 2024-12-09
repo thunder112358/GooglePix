@@ -2,6 +2,13 @@
 #include <stdlib.h>
 #include "block_matching.h"
 #include "ica.h"
+#include "kernels.h"
+#include "utils.h"
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #define YUV420P_U_OFFSET(w,h) ((w)*(h))
 #define YUV420P_V_OFFSET(w,h) ((w)*(h) + ((w)*(h))/4)
@@ -320,7 +327,87 @@ int main(int argc, char* argv[]) {
                 
                 printf("\nICA Region Analysis:\n");
                 analyze_regions(ica_error, 4, 4);
-                
+
+                // Add Kernel Estimation Part Here
+                printf("\n=== Kernel Estimation ===\n");
+                KernelParams kernel_params = {
+                    .type = KERNEL_HANDHELD,
+                    .k_detail = 1.0f,
+                    .k_denoise = 0.5f,
+                    .d_tr = 1.0f,
+                    .d_th = 0.1f,
+                    .k_shrink = 2.0f,
+                    .k_stretch = 4.0f,
+                    .window_size = 32
+                };
+
+                printf("Estimating kernels...\n");
+                SteerableKernels* kernels = estimate_kernels(ref_img, &kernel_params);
+                if (kernels) {
+                    printf("Successfully estimated %d kernels\n", kernels->count);
+
+                    // Save kernel visualizations
+                    for (int i = 0; i < kernels->count; i++) {
+                        char filename[256];
+                        snprintf(filename, sizeof(filename), "kernel_%02d.ppm", i);
+                        save_kernel_visualization(
+                            kernels->weights + i * kernels->size * kernels->size,
+                            kernels->size,
+                            filename
+                        );
+
+                        // Compute and save kernel responses
+                        KernelResponse* response = compute_kernel_response(
+                            ref_img,
+                            kernels->weights + i * kernels->size * kernels->size,
+                            kernels->size
+                        );
+
+                        if (response) {
+                            snprintf(filename, sizeof(filename), "kernel_response_%02d.ppm", i);
+                            save_response_visualization(response, filename);
+                            printf("Kernel %d: orientation = %.2f degrees, response range = [%.3f, %.3f]\n",
+                                   i, kernels->orientations[i] * 180.0f / M_PI,
+                                   response->min_val, response->max_val);
+                            free_kernel_response(response);
+                        }
+                    }
+
+                    // Estimate kernel covariances
+                    printf("\nComputing kernel covariances...\n");
+                    int cov_height = height/2;
+                    int cov_width = width/2;
+                    Matrix2x2* covs = (Matrix2x2*)malloc(cov_height * cov_width * sizeof(Matrix2x2));
+                    
+                    if (covs) {
+                        KernelEstimationParams est_params = {
+                            .k_detail = kernel_params.k_detail,
+                            .k_denoise = kernel_params.k_denoise,
+                            .d_tr = kernel_params.d_tr,
+                            .d_th = kernel_params.d_th,
+                            .k_stretch = kernel_params.k_stretch,
+                            .k_shrink = kernel_params.k_shrink,
+                            .noise = {.alpha = 0.01f, .beta = 0.001f}
+                        };
+
+                        estimate_kernel_covariance(ref_img, &est_params, covs, cov_height, cov_width);
+                        
+                        // Visualize covariance determinants
+                        float* det_map = (float*)malloc(cov_height * cov_width * sizeof(float));
+                        if (det_map) {
+                            for (int i = 0; i < cov_height * cov_width; i++) {
+                                det_map[i] = matrix2x2_determinant(&covs[i]);
+                            }
+                            save_kernel_visualization(det_map, cov_width, "covariance_det.ppm");
+                            free(det_map);
+                        }
+                        free(covs);
+                    }
+
+                    free_steerable_kernels(kernels);
+                    printf("Kernel estimation completed\n");
+                }
+
                 free_error_map(ica_error);
             }
             

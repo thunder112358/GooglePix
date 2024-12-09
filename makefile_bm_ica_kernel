@@ -1,0 +1,15 @@
+CC = gcc
+CFLAGS = -Wall -O2 -g -fopenmp -I.
+LDFLAGS = -lm -fopenmp
+
+# Add all necessary object files
+OBJECTS = verify_real_image.o block_matching.o ica.o kernels.o linalg.o kernels_common.o
+
+verify_real_image: $(OBJECTS)
+	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f *.o verify_real_image

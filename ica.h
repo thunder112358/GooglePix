@@ -7,6 +7,7 @@
 #define ICA_H
 
 #include "block_matching.h"
+#include "common.h"
 
 // Gradient structure matching Python implementation
 typedef struct {

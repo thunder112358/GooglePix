@@ -6,7 +6,6 @@
 #include "common.h"
 // Constants
 #define DEFAULT_TILE_SIZE 16
-#define MAX_PYRAMID_LEVELS 4
 
 // Parameter structures
 typedef struct {
@@ -62,5 +61,6 @@ void free_alignment_params(AlignmentParams* params);
 void print_progress(const char* message, int verbose_level);
 double get_time(void);
 void clip_value(float* value, float min, float max);
+float clamp(float value, float min, float max);
 
 #endif // UTILS_H 

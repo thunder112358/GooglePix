@@ -1,0 +1,27 @@
+CC = gcc
+CFLAGS = -Wall -O2 -g -fopenmp -I. -DDEBUG_LINALG
+LDFLAGS = -lm -fopenmp
+
+SRCS = verify_real_image.c \
+       block_matching.c \
+       ica.c \
+       kernels.c \
+       linalg.c \
+       utils.c \
+       kernels_common.c
+
+OBJS = $(SRCS:.c=.o)
+TARGET = verify_real_image
+
+$(TARGET): $(OBJS)
+	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
+
+%.o: %.c common.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJS) $(TARGET) *.ppm
+
+test: $(TARGET)
+	mkdir -p output
+	./$(TARGET) test_images/ref.yuv test_images/target.yuv 1920 1080
